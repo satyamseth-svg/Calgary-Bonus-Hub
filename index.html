@@ -379,7 +379,7 @@ function parseCSV(txt){
 // ════════════════════════════════════════════════════════
 // SCORING ENGINE
 // ════════════════════════════════════════════════════════
-function scoreAssociate(raw){
+function scoreAssociate(raw, useWPI){
   // Pack S+M combined
   let packQty=0, packTgt=0.0, packDetail=[];
   // Other scored processes
@@ -413,7 +413,23 @@ function scoreAssociate(raw){
 
   // Finalise pack combined
   const packTgtR=Math.round(packTgt*10)/10;
-  const packPct=packTgtR>0?Math.round(packQty/packTgtR*100):null;
+  let packPct=packTgtR>0?Math.round(packQty/packTgtR*100):null;
+  let wpiMode=false, wpiLabel='';
+  if(useWPI && packTgtR>0){
+    const sD=packDetail.filter(d=>d.type==='Packing (S)');
+    const mD=packDetail.filter(d=>d.type==='Packing (M)');
+    const sQty=sD.reduce((s,d)=>s+d.qty,0), mQty=mD.reduce((s,d)=>s+d.qty,0);
+    const sTgt=sD.reduce((s,d)=>s+d.target,0), mTgt=mD.reduce((s,d)=>s+d.target,0);
+    const totQ=sQty+mQty;
+    const achS=sTgt>0?sQty/sTgt*100:0, achM=mTgt>0?mQty/mTgt*100:0;
+    if(sTgt>0&&mTgt>0&&totQ>0){
+      const volS=sQty/totQ, volM=mQty/totQ;
+      packPct=Math.round(achS*volS+achM*volM);
+      wpiLabel='WPI · S '+Math.round(achS)+'%×'+Math.round(volS*100)+'% + M '+Math.round(achM)+'%×'+Math.round(volM*100)+'%';
+    } else if(sTgt>0){ packPct=Math.round(achS); wpiLabel='WPI · S only '+Math.round(achS)+'%'; }
+    else if(mTgt>0){ packPct=Math.round(achM); wpiLabel='WPI · M only '+Math.round(achM)+'%'; }
+    wpiMode=true;
+  }
 
   // Finalise other procs
   for(const[,d]of Object.entries(otherProcs)){
@@ -448,17 +464,18 @@ function scoreAssociate(raw){
     return{name:raw.name,role:raw.role,joined:raw.joined,days:raw.days,
            packQty,packTgtR,packPct,packDetail,otherProcs,avg,
            it,nonit,total,goal,itComp,hrsReq,hrsNote,
-           daysOk,hrsOk,prodOk,tier,pay,qualifies:!!tier};
+           daysOk,hrsOk,prodOk,tier,pay,qualifies:!!tier,wpiMode,wpiLabel};
   }
   return{name:raw.name,role:raw.role,joined:raw.joined,days:raw.days,
          packQty,packTgtR,packPct,packDetail,otherProcs,avg,
          it,nonit,total,goal,itComp,hrsReq,hrsNote,
-         daysOk,hrsOk,prodOk,tier:null,pay:0,qualifies:false};
+         daysOk,hrsOk,prodOk,tier:null,pay:0,qualifies:false,wpiMode,wpiLabel};
 }
 
-function scoreWeek(csvText){
+function scoreWeek(csvText, dateFrom){
+  const useWPI = dateFrom && dateFrom >= '2026-06-22';
   const raw=parseCSV(csvText);
-  return raw.filter(r=>!isExcluded(r.name,r.role)).map(scoreAssociate);
+  return raw.filter(r=>!isExcluded(r.name,r.role)).map(r=>scoreAssociate(r, useWPI));
 }
 
 // ════════════════════════════════════════════════════════
@@ -469,7 +486,7 @@ function init(){
   try{const st=localStorage.getItem('wh-calgary-hub');raw=st?JSON.parse(st):[];}
   catch{raw=[];}
   weeks=raw.map(w=>{
-    const scored=scoreWeek(w.csvText);
+    const scored=scoreWeek(w.csvText, w.dateFrom);
     const qualifiers=scored.filter(a=>a.qualifies);
     return{...w,scored,qualifiers,totalPay:qualifiers.reduce((s,a)=>s+a.pay,0)};
   }).sort((a,b)=>new Date(a.dateFrom)-new Date(b.dateFrom));
@@ -595,8 +612,14 @@ function renderCards(scored){
     if(a.packDetail.length){
       const rows=a.packDetail.map(d=>`
         <div class="tt-pr"><span>${d.type}</span><span class="v ${clr(d.pct)}">${d.qty}/${d.target.toFixed(1)}(${d.pct}%)</span></div>
-        <div class="tt-pr-sub">IT: ${d.ts} · ${d.type==='Packing (S)'?'35':'25'}/hr (WPI)</div>`).join('');
-      packHtml=rows+`<div class="tt-avg" style="font-size:11px;padding:3px 0 8px"><span>Combined Packing (WPI)</span><span class="${clr(a.packPct)}">${a.packQty}/${a.packTgtR.toFixed(1)}=${a.packPct}%</span></div>`;
+        <div class="tt-pr-sub">IT: ${d.ts} · ${d.type==='Packing (S)'?'35':'25'}/hr</div>`).join('');
+      let packSum;
+      if(a.wpiMode && a.wpiLabel){
+        packSum=`<div class="tt-avg" style="font-size:11px;padding:3px 0 8px"><span>Packing WPI</span><span class="${clr(a.packPct)}">${a.packPct}%</span></div><div class="tt-pr-sub" style="margin-top:-4px;font-size:10px">${a.wpiLabel}</div>`;
+      } else {
+        packSum=`<div class="tt-avg" style="font-size:11px;padding:3px 0 8px"><span>Combined Packing</span><span class="${clr(a.packPct)}">${a.packQty}/${a.packTgtR.toFixed(1)}=${a.packPct}%</span></div>`;
+      }
+      packHtml=rows+packSum;
     }
     const otherHtml=Object.entries(a.otherProcs).map(([proc,d])=>`
       <div class="tt-pr"><span>${proc}</span><span class="v ${clr(d.pct)}">${d.qty}/${d.target.toFixed(1)}(${d.pct}%)</span></div>
@@ -604,7 +627,7 @@ function renderCards(scored){
 
     // Card face process rows
     let faceProcs='';
-    if(a.packPct!==null) faceProcs+=`<div class="pr-row"><span>Packing (S+M)</span><span class="pr-pct ${clr(a.packPct)}">${a.packPct}%</span></div>`;
+    if(a.packPct!==null) faceProcs+=`<div class="pr-row"><span>Packing (S+M)${a.wpiMode?' <span style="font-size:8px;background:#7c3aed;color:#fff;padding:1px 5px;border-radius:4px;margin-left:4px">WPI</span>':''}</span><span class="pr-pct ${clr(a.packPct)}">${a.packPct}%</span></div>`;
     for(const[proc,d]of Object.entries(a.otherProcs)) faceProcs+=`<div class="pr-row"><span>${proc}</span><span class="pr-pct ${clr(d.pct)}">${d.pct}%</span></div>`;
 
     return`<div class="acard${a.qualifies?' qual':''}" onclick="this.classList.toggle('pin')">
@@ -708,7 +731,7 @@ function addWeek(){
     if(!pendingCSV) throw new Error('No CSV loaded.');
     const s=document.getElementById('m-start').value,e=document.getElementById('m-end').value;
     const autoLbl=s&&e?fmtShort(s)+' – '+fmtShort(e):'New Week';
-    const scored=scoreWeek(pendingCSV);
+    const scored=scoreWeek(pendingCSV, document.getElementById("modal-from").value);
     if(!scored.length) throw new Error('No eligible associates found. Check that the CSV has the correct columns and at least one non-supervisor associate.');
     const qualifiers=scored.filter(a=>a.qualifies);
     const totalPay=qualifiers.reduce((s,a)=>s+a.pay,0);
@@ -832,7 +855,7 @@ ${allScripts}
 // ── INIT from baked data instead of localStorage ──
 function init(){
   weeks = BAKED_WEEKS.map(w=>{
-    const scored = scoreWeek(w.csvText);
+    const scored = scoreWeek(w.csvText, w.dateFrom);
     const qualifiers = scored.filter(a=>a.qualifies);
     return{...w, scored, qualifiers, totalPay:qualifiers.reduce((s,a)=>s+a.pay,0)};
   }).sort((a,b)=>new Date(a.dateFrom)-new Date(b.dateFrom));
@@ -876,7 +899,7 @@ document.addEventListener('DOMContentLoaded',init);
 // ── INIT from baked data instead of localStorage ──
 function init(){
   weeks = BAKED_WEEKS.map(w=>{
-    const scored = scoreWeek(w.csvText);
+    const scored = scoreWeek(w.csvText, w.dateFrom);
     const qualifiers = scored.filter(a=>a.qualifies);
     return{...w, scored, qualifiers, totalPay:qualifiers.reduce((s,a)=>s+a.pay,0)};
   }).sort((a,b)=>new Date(a.dateFrom)-new Date(b.dateFrom));
