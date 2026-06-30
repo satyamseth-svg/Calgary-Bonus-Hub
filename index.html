@@ -448,7 +448,15 @@ function scoreAssociate(raw, useWPI){
   const it=Math.round(raw.totalit*10)/10;
   const nonit=Math.round(raw.nonit*10)/10;
   const total=Math.round((it+nonit)*10)/10;
-  const goal=Math.round(raw.days*IT_DAY*10)/10||IT_DAY;
+  // IT compliance goal — use fixed working days for named associates when CSV has days=0
+  let itDays = raw.days;
+  if (itDays === 0) {
+    const nl = raw.name.toLowerCase();
+    if (nl.includes('nyapal') && nl.includes('duop')) itDays = 5;
+    else if (nl.includes('ayman') && nl.includes('ibrahim')) itDays = 3;
+    else itDays = Math.max(1, Math.round(raw.totalit / IT_DAY));  // estimate from total IT hours
+  }
+  const goal = Math.round(itDays * IT_DAY * 10) / 10 || IT_DAY;
   const itComp=goal>0?Math.round(total/goal*100):0;
 
   // Bonus eligibility — with named-associate IT overrides
