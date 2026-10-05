@@ -355,11 +355,30 @@ function weekLabel(w){return w.dateFrom&&w.dateTo?fmtShort(w.dateFrom)+' – '+f
 // ════════════════════════════════════════════════════════
 // EXCLUSION
 // ════════════════════════════════════════════════════════
-function isExcluded(name,role){
+function _parseJoined(joined){
+  if(!joined) return null;
+  const m=joined.match(/(\d{1,2})[- ]([A-Za-z]{3})[- ](\d{2,4})/);
+  if(!m) return null;
+  const months=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const yr=m[3].length===2?'20'+m[3]:m[3];
+  const mo=months.indexOf(m[2].toLowerCase())+1;
+  return new Date(`${yr}-${String(mo).padStart(2,'0')}-${m[1].padStart(2,'0')}`);
+}
+function _tenureExcluded(weekStart,joined){
+  const j=_parseJoined(joined);
+  if(!j) return false;
+  const ws=new Date(weekStart);
+  if(isNaN(j)||isNaN(ws)) return false;
+  const oneMonthAfter=new Date(j);
+  oneMonthAfter.setMonth(oneMonthAfter.getMonth()+1);
+  return ws<oneMonthAfter;
+}
+function isExcluded(name,role,weekStart,joined,checkTenure){
   const r=(role||'').toLowerCase();
   if(r.includes('supervisor')||r.includes('driver')) return true;
   if(name.includes('@')) return true;
   if(/^(newhire|calg trial|trial)\d*$/i.test(name.trim())) return true;
+  if(checkTenure && joined && weekStart && _tenureExcluded(weekStart,joined)) return true;
   return false;
 }
 
@@ -498,9 +517,22 @@ function scoreAssociate(raw, weekStart){
          daysOk,hrsOk,prodOk,tier:null,pay:0,qualifies:false};
 }
 
-function scoreWeek(csvText, weekStart){
+function scoreWeek(csvText, weekStart, isPaid){
   const raw=parseCSV(csvText);
-  return raw.filter(r=>!isExcluded(r.name,r.role)).map(r=>scoreAssociate(r, weekStart));
+  return raw.map(r=>{
+    // Tenure gate (< 1 month) only applied to unpaid weeks — never retroactively claws back paid bonuses
+    const checkTenure=!isPaid;
+    if(isExcluded(r.name,r.role,weekStart,r.joined,checkTenure)) return {name:r.name,role:r.role,excluded:true,reason:isExclusionReason(r.name,r.role,weekStart,r.joined,checkTenure)};
+    return scoreAssociate(r, weekStart);
+  });
+}
+function isExclusionReason(name,role,weekStart,joined,checkTenure){
+  const r=(role||'').toLowerCase();
+  if(r.includes('supervisor')||r.includes('driver')) return 'Supervisor/Driver role';
+  if(name.includes('@')) return 'Email address';
+  if(/^(newhire|calg trial|trial)\d*$/i.test(name.trim())) return 'Trial associate';
+  if(checkTenure && joined && weekStart && _tenureExcluded(weekStart,joined)) return `Less than 1 month tenure (joined ${joined})`;
+  return 'Excluded';
 }
 
 // ════════════════════════════════════════════════════════
@@ -511,7 +543,7 @@ function init(){
   try{const st=localStorage.getItem('wh-calgary-hub');raw=st?JSON.parse(st):[];}
   catch{raw=[];}
   weeks=raw.map(w=>{
-    const scored=scoreWeek(w.csvText, w.dateFrom);
+    const scored=scoreWeek(w.csvText, w.dateFrom, w.paid);
     const qualifiers=scored.filter(a=>a.qualifies);
     return{...w,scored,qualifiers,totalPay:qualifiers.reduce((s,a)=>s+a.pay,0)};
   }).sort((a,b)=>new Date(a.dateFrom)-new Date(b.dateFrom));
